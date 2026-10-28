@@ -1,0 +1,169 @@
+package com.fz.yqlandroid.manager
+
+import android.content.Context
+import android.provider.Settings
+import android.util.Log
+import java.security.MessageDigest
+
+/**
+ * 设备ID管理器（持久化，卸载重装不变）
+ * 
+ * ✅ 使用 ANDROID_ID 作为基础：
+ * - 卸载应用后不会变化
+ * - 只有恢复出厂设置才会变化
+ * - 不需要额外权限
+ * 
+ * 与 iOS Keychain 效果一致：卸载重装后设备ID保持不变
+ */
+object DeviceIDManager {
+    private const val TAG = "DeviceIDManager"
+    
+    // 缓存设备ID，避免重复计算
+    @Volatile
+    private var cachedDeviceID: String? = null
+    
+    /**
+     * 获取持久化设备ID
+     * 
+     * 🔥 核心原理：
+     * ANDROID_ID 是设备级别的标识符，存储在系统数据库中
+     * 卸载应用不会影响它，只有恢复出厂设置才会重置
+     * 
+     * 我们基于 ANDROID_ID + 包名 生成 SHA256 哈希
+     * 确保：
+     * 1. 同一设备同一应用 = 相同的设备ID
+     * 2. 卸载重装后 = 相同的设备ID
+     * 3. 不同应用 = 不同的设备ID（隐私保护）
+     */
+    @Synchronized
+    fun getDeviceID(context: Context): String {
+        // 如果有缓存，直接返回
+        cachedDeviceID?.let { 
+            return it 
+        }
+        
+        val deviceId = generatePersistentID(context)
+        cachedDeviceID = deviceId
+        Log.d(TAG, "📱 设备ID: ${deviceId.take(8)}...")
+        return deviceId
+    }
+    
+    /**
+     * 生成持久化设备ID
+     * 
+     * 公式: SHA256(ANDROID_ID + 包名 + 固定盐值)
+     * 
+     * - ANDROID_ID: 系统级，卸载不变
+     * - 包名: 区分不同应用
+     * - 盐值: 增加安全性
+     */
+    // 🔥 平台前缀：与iOS共用同一套接口，靠此前缀区分平台。jfhcs 用 androidcs（仍以 android 开头，
+    //   后端/PC 的安卓判断不受影响），总后台据此显示 Android-cs，并和金凤凰（android 前缀）分开计 SRT全码
+    private const val PLATFORM_PREFIX = "androidcs"
+
+    private fun generatePersistentID(context: Context): String {
+        val androidId = getAndroidID(context)
+        if (isInvalidAndroidID(androidId)) {
+            Log.w(TAG, "⚠️ §110 ANDROID_ID 无效(raw=[$androidId])，可能是系统隐私保护/双开/改机，改用本机随机设备号")
+            return getFallbackDeviceID(context)
+        }
+        val packageName = context.packageName
+        val salt = "HuoFengHuang_2024_DeviceID" // 固定盐值
+        
+        // 组合: ANDROID_ID-包名-盐值
+        val combined = "$androidId-$packageName-$salt"
+        
+        // SHA256 哈希，取前32位（与iOS一致），再加 android 前缀区分平台
+        return PLATFORM_PREFIX + sha256(combined).take(32).uppercase()
+    }
+    
+    /**
+     * 获取 ANDROID_ID
+     * 
+     * 特性：
+     * - 每台设备唯一
+     * - 卸载应用不会变化 ✅
+     * - 恢复出厂设置后会变化
+     * - 不需要任何权限
+     */
+    private fun getAndroidID(context: Context): String {
+        return try {
+            Settings.Secure.getString(
+                context.contentResolver,
+                Settings.Secure.ANDROID_ID
+            ) ?: "unknown_device"
+        } catch (e: Exception) {
+            Log.e(TAG, "获取 ANDROID_ID 失败", e)
+            "unknown_device"
+        }
+    }
+    
+    /**
+     * SHA256 哈希
+     */
+    private fun sha256(input: String): String {
+        val bytes = MessageDigest.getInstance("SHA-256").digest(input.toByteArray())
+        return bytes.joinToString("") { "%02x".format(it) }
+    }
+    
+    /**
+     * 获取原始 ANDROID_ID（调试用）
+     */
+    fun getRawAndroidID(context: Context): String {
+        return getAndroidID(context)
+    }
+
+    // §110 系统隐私保护/双开/改机时 ANDROID_ID 会返回这些假值，不同客户的手机算出同一个设备号 → 串号
+    private val INVALID_ANDROID_IDS = setOf("", "unknown_device", "null", "9774d56d682e549c")
+
+    private fun isInvalidAndroidID(id: String): Boolean {
+        val v = id.trim().lowercase()
+        return v in INVALID_ANDROID_IDS || v.all { it == '0' }
+    }
+
+    /** ANDROID_ID 被系统限制（返回假值）时为 true，登录页据此弹提示引导用户关闭限制 */
+    fun isAndroidIdRestricted(context: Context): Boolean = isInvalidAndroidID(getAndroidID(context))
+
+    // ANDROID_ID 无效时的兜底设备号：首次生成随机值存 SharedPreferences，卸载重装/清数据会变
+    @Synchronized
+    private fun getFallbackDeviceID(context: Context): String {
+        val prefs = context.getSharedPreferences("install_prefs", Context.MODE_PRIVATE)
+        var id = prefs.getString("fallback_device_id", null)
+        if (id.isNullOrBlank()) {
+            id = PLATFORM_PREFIX + java.util.UUID.randomUUID().toString().replace("-", "").uppercase()
+            prefs.edit().putString("fallback_device_id", id).apply()
+            Log.d(TAG, "🆕 生成兜底设备ID: ${id.take(15)}...")
+        }
+        return id
+    }
+
+    // ⭐ §71 安装实例ID：首启随机 UUID，存 SharedPreferences。
+    //   deviceId（ANDROID_ID 衍生）可被 root/框架克隆成一样，但两台手机的 installId 必然不同——
+    //   登录/WS 连接都带上它，后端按 deviceId 单活：新登录抢占、克隆机被踢。
+    //   卸载重装会变：新安装登录即认领活跃位，属预期（等同换机）。
+    @Volatile
+    private var cachedInstallId: String? = null
+
+    @Synchronized
+    fun getInstallId(context: Context): String {
+        cachedInstallId?.let { return it }
+        val prefs = context.getSharedPreferences("install_prefs", Context.MODE_PRIVATE)
+        var id = prefs.getString("install_id", null)
+        if (id.isNullOrBlank()) {
+            id = java.util.UUID.randomUUID().toString().replace("-", "").uppercase()
+            prefs.edit().putString("install_id", id).apply()
+            Log.d(TAG, "🆕 生成安装实例ID: ${id.take(8)}...")
+        }
+        cachedInstallId = id
+        return id
+    }
+    
+    /**
+     * 清除缓存（仅清除内存缓存，设备ID本身不会变）
+     */
+    fun clearCache() {
+        cachedDeviceID = null
+        Log.d(TAG, "🗑️ 已清除内存缓存")
+    }
+}
+
