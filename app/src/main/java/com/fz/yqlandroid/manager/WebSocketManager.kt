@@ -732,7 +732,9 @@ class WebSocketManager private constructor() {
             "srtPlayHost" to (if (connectstype == 3) srtPlayHost else ""),
             "srtPlayPort" to (if (connectstype == 3) srtPlayPort else 0),
             // SRT直推当前档位：后端 SrtPointsService 按它查该档位每小时消耗，按分钟扣流量
-            "profile" to (if (connectstype == 3) WebRTCManager.effectiveSrtProfile else ""),
+            //   SRS 推 SRT码档（1920×1440 / 2K / 4K）同样上报，后端照样计费、按分辨率限观看人数
+            "profile" to (if (connectstype == 3) WebRTCManager.effectiveSrtProfile
+                          else WebRTCManager.currentTypeKey.takeIf { it in listOf("p1440", "srt2k", "srt4k") } ?: ""),
             // 当前档位（任何模式）：PC 档位显示跟它走（登录 / 没 PC 在线时手机自己回超低网）
             "curType" to WebRTCManager.currentTypeKey,
             "deviceType" to mapOf(
@@ -760,7 +762,9 @@ class WebSocketManager private constructor() {
             "srtFull" to (tokenPrefs?.getBoolean("srt_full", false) ?: false),
             "srtPoints" to (tokenPrefs?.getLong("srt_points", 0L) ?: 0L),
             // 支持第 5 级档位 p1440（1920×1440）：PC 据此才显示该档按钮（老版本 App 不认 p1440）
-            "supportsP1440" to true
+            "supportsP1440" to true,
+            // SRS（WebRTC）也能推 SRT码档 1920×1440 / 2K / 4K：PC 据此在 SRS 下也按 SRT全码 + 流量放开这三档
+            "srsHighRes" to true
         )
         
         val payload = mapOf(

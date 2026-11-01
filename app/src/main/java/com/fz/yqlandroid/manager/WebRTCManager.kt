@@ -474,7 +474,10 @@ class WebRTCManager(private val context: Context) : P2PManager.DataSource {
         LadderProfile.HIGH to Triple(1440, 1080, false),     // 超清   4:3
         LadderProfile.STANDARD to Triple(1024, 768, false),  // 高清   4:3
         LadderProfile.ULTRA to Triple(1280, 720, true),      // 超高帧 16:9
-        LadderProfile.LOW to Triple(640, 480, false)         // 超低网 4:3（§21.28 第5档）
+        LadderProfile.LOW to Triple(640, 480, false),        // 超低网 4:3（§21.28 第5档）
+        // SRT码档 2K / 4K：SRS 也能推（尺寸 / 码率跟 SRT直推同一套 srtParams，见 calculateLadder 的 highResPreset）
+        LadderProfile.SRT2K to Triple(2560, 1440, true),
+        LadderProfile.SRT4K to Triple(3840, 2160, true)
     )
 
     private fun calculateLadder(front: Boolean) {
@@ -557,6 +560,22 @@ class WebRTCManager(private val context: Context) : P2PManager.DataSource {
                 is16x9 = false
             )
         }
+        // SRT码档 2K / 4K（SRS 也能推）：目标尺寸 / 码率取 srtParams（和 SRT直推一样，总后台可改），
+        //   采集就近 16:9（不要求 60fps，4K 一般只有 30）；采集比目标大就 scaleResolutionDownBy 缩到目标
+        fun highResPreset(profile: LadderProfile, key: String): LadderPreset {
+            val plan = com.fz.yqlandroid.manager.srtdirect.SrtDirectParams.plan(context, key)
+            val cap = findBestResolution(formats, plan.width, plan.height, plan.width.toDouble() / plan.height,
+                sizeMaxFps, desiredFps, fpsPriority = false)
+            return LadderPreset(
+                width = cap.width, height = cap.height,
+                fps = fpsFor(cap), maxKbps = plan.bitrateKbps, minKbps = plan.bitrateKbps * 60 / 100,
+                maxPushFps = 30, scaleDown = maxOf(1.0, cap.height.toDouble() / plan.height), is16x9 = true
+            ).also {
+                Log.d("meidui", "📐 ${profileName(profile)} SRS 目标${plan.width}x${plan.height} → 实采${cap.width}x${cap.height}" +
+                        "@${it.fps}fps 缩放/${"%.2f".format(it.scaleDown)} ${it.minKbps}-${it.maxKbps}kbps")
+            }
+        }
+
         Log.d("meidui", "📐 超低网(low)决策: 原生640x480就近=${lowCap.width}x${lowCap.height}@${lowNativeFps}fps, " +
                 "STANDARD采集=${stdCap.width}x${stdCap.height}@${stdFps}fps → " +
                 if (lowPreset.scaleDown > 1.0) "采集${lowPreset.width}x${lowPreset.height}缩放/${"%.2f".format(lowPreset.scaleDown)}到640x480"
@@ -591,7 +610,9 @@ class WebRTCManager(private val context: Context) : P2PManager.DataSource {
                 width = ultraCap.width, height = ultraCap.height,
                 fps = fpsFor(ultraCap, LadderProfile.ULTRA), maxKbps = cfgUltra.maxKbps, minKbps = cfgUltra.minKbps,
                 maxPushFps = 60, scaleDown = 1.0, is16x9 = true
-            )
+            ),
+            LadderProfile.SRT2K to highResPreset(LadderProfile.SRT2K, "srt2k"),
+            LadderProfile.SRT4K to highResPreset(LadderProfile.SRT4K, "srt4k")
         )
         
         // 默认高清档
@@ -2908,10 +2929,10 @@ class WebRTCManager(private val context: Context) : P2PManager.DataSource {
             "type" -> {
                 val type = config["type"] as? String ?: ""
                 val profile = when (type.lowercase()) {
-                    // SRT码档（1920×1440 / 2K / 4K）只在 SRT直推有；SRS 没有这几档 → 按超高清 1920×1080
-                    "srt2k" -> if (srtDirectMode) LadderProfile.SRT2K else LadderProfile.P4K
-                    "srt4k" -> if (srtDirectMode) LadderProfile.SRT4K else LadderProfile.P4K
-                    "p1440" -> if (srtDirectMode) LadderProfile.P1440 else LadderProfile.P4K
+                    // SRT码档（1920×1440 / 2K / 4K）SRT直推、SRS 都能推（PC / 后端按 SRT全码 + 流量放开）
+                    "srt2k" -> LadderProfile.SRT2K
+                    "srt4k" -> LadderProfile.SRT4K
+                    "p1440" -> LadderProfile.P1440
                     "p4k", "4k" -> LadderProfile.P4K
                     "ultra" -> LadderProfile.ULTRA
                     "high" -> LadderProfile.HIGH
