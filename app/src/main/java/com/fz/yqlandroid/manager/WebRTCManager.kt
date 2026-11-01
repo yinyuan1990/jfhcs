@@ -560,18 +560,21 @@ class WebRTCManager(private val context: Context) : P2PManager.DataSource {
                 is16x9 = false
             )
         }
-        // SRT码档 2K / 4K（SRS 也能推）：目标尺寸 / 码率取 srtParams（和 SRT直推一样，总后台可改），
+        // SRT码档 2K / 4K（SRS 也能推）：目标尺寸 / 码率取总后台「视频码率档位」的 srt2k / srt4k（没配用内置默认），
         //   采集就近 16:9（不要求 60fps，4K 一般只有 30）；采集比目标大就 scaleResolutionDownBy 缩到目标
-        fun highResPreset(profile: LadderProfile, key: String): LadderPreset {
-            val plan = com.fz.yqlandroid.manager.srtdirect.SrtDirectParams.plan(context, key)
-            val cap = findBestResolution(formats, plan.width, plan.height, plan.width.toDouble() / plan.height,
+        fun highResPreset(profile: LadderProfile): LadderPreset {
+            val (defW, defH, _) = iosTargets[profile]!!
+            val cfg = LadderConfigStore.entryOf(profile)
+            val tw = if (cfg.w > 0 && cfg.h > 0) cfg.w else defW
+            val th = if (cfg.w > 0 && cfg.h > 0) cfg.h else defH
+            val cap = findBestResolution(formats, tw, th, tw.toDouble() / th,
                 sizeMaxFps, desiredFps, fpsPriority = false)
             return LadderPreset(
                 width = cap.width, height = cap.height,
-                fps = fpsFor(cap), maxKbps = plan.bitrateKbps, minKbps = plan.bitrateKbps * 60 / 100,
-                maxPushFps = 30, scaleDown = maxOf(1.0, cap.height.toDouble() / plan.height), is16x9 = true
+                fps = fpsFor(cap, profile), maxKbps = cfg.maxKbps, minKbps = cfg.minKbps,
+                maxPushFps = 30, scaleDown = maxOf(1.0, cap.height.toDouble() / th), is16x9 = true
             ).also {
-                Log.d("meidui", "📐 ${profileName(profile)} SRS 目标${plan.width}x${plan.height} → 实采${cap.width}x${cap.height}" +
+                Log.d("meidui", "📐 ${profileName(profile)} SRS 目标${tw}x${th} → 实采${cap.width}x${cap.height}" +
                         "@${it.fps}fps 缩放/${"%.2f".format(it.scaleDown)} ${it.minKbps}-${it.maxKbps}kbps")
             }
         }
@@ -611,8 +614,8 @@ class WebRTCManager(private val context: Context) : P2PManager.DataSource {
                 fps = fpsFor(ultraCap, LadderProfile.ULTRA), maxKbps = cfgUltra.maxKbps, minKbps = cfgUltra.minKbps,
                 maxPushFps = 60, scaleDown = 1.0, is16x9 = true
             ),
-            LadderProfile.SRT2K to highResPreset(LadderProfile.SRT2K, "srt2k"),
-            LadderProfile.SRT4K to highResPreset(LadderProfile.SRT4K, "srt4k")
+            LadderProfile.SRT2K to highResPreset(LadderProfile.SRT2K),
+            LadderProfile.SRT4K to highResPreset(LadderProfile.SRT4K)
         )
         
         // 默认高清档
