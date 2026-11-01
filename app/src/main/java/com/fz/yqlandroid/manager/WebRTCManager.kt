@@ -502,7 +502,8 @@ class WebRTCManager(private val context: Context) : P2PManager.DataSource {
         LadderProfile.SRT4K to Triple(3840, 2160, true)
     )
 
-    private fun calculateLadder(front: Boolean) {
+    /** applyDefault=false：只重算档位表、不套默认高清档（切摄像头时由调用方按原档位套一次） */
+    private fun calculateLadder(front: Boolean, applyDefault: Boolean = true) {
         val formats = if (front) frontCameraFormats else backCameraFormats
         val maxFps = if (front) frontMaxFps else backMaxFps
         val sizeMaxFps = if (front) frontSizeMaxFps else backSizeMaxFps
@@ -641,7 +642,7 @@ class WebRTCManager(private val context: Context) : P2PManager.DataSource {
         )
         
         // 默认高清档
-        applyProfile(LadderProfile.STANDARD)
+        if (applyDefault) applyProfile(LadderProfile.STANDARD)
         
         val cameraType = if (front) "前置" else "后置"
         Log.d(TAG, "═══════════════════════════════════════════")
@@ -2464,15 +2465,18 @@ class WebRTCManager(private val context: Context) : P2PManager.DataSource {
                 
                 // 🔥 切换后重新计算档位（前后置能力不同）
                 // calculateLadder 末尾会套回高清档：切完按原档位重新套，否则 1920×1440 / 2K / 4K 一切摄像头就掉成高清、PC 还显示原档
+                // 这个回调跑在 WebRTC 相机线程上：在这里连续 changeCaptureFormat 会和相机会话打开互等 → 相机线程死锁、
+                //   0 帧卡死（shiji034p 4K 切前置实锤）。只重算档位表，回主线程按原档位套一次（只换一次采集格式）。
                 val keepProfile = currentProfile
-                calculateLadder(isFront)
-                if (keepProfile != currentProfile && currentLadder.containsKey(keepProfile)) {
-                    applyProfile(keepProfile)
+                calculateLadder(isFront, applyDefault = false)
+                android.os.Handler(android.os.Looper.getMainLooper()).post {
+                    val target = if (currentLadder.containsKey(keepProfile)) keepProfile else LadderProfile.STANDARD
+                    applyProfile(target)
                     setEncodingParameters()
-                }
-                if (isSrsHdProfile(currentProfile)) {
-                    srsHdLog("切换到${if (isFront) "前置" else "后置"}摄像头 档位=${profileName(currentProfile)}" +
-                            " 采集 ${currentWidth}x${currentHeight}@${captureFps()} ${srsHdCameraDesc()}")
+                    if (isSrsHdProfile(currentProfile)) {
+                        srsHdLog("切换到${if (isFront) "前置" else "后置"}摄像头 档位=${profileName(currentProfile)}" +
+                                " 采集 ${currentWidth}x${currentHeight}@${captureFps()} ${srsHdCameraDesc()}")
+                    }
                 }
 
                 // §106 新摄像头到不了 <1 倍 → 记忆值回 1.0（切回后置也保持 1.0，与 PC 显示一致）
