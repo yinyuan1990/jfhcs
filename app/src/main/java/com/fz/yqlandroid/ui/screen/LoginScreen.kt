@@ -399,6 +399,10 @@ fun LoginScreen(
                             
                             result.fold(
                                 onSuccess = { response ->
+                                    // 「登录」按钮（default）按后端 loginPublishMode 定，没下发 = srt
+                                    if (publishMode == "default") {
+                                        publishMode = if (response.loginPublishMode == "srs") "srs" else "srt"
+                                    }
                                     // 🔥 Step 1: 保存登录凭证（与iOS一致）
                                     val prefs = context.getSharedPreferences("login_prefs", Context.MODE_PRIVATE)
                                     prefs.edit().apply {
@@ -583,7 +587,7 @@ fun LoginScreen(
             }
 
             Button(
-                onClick = { loginWithMode("srt") },
+                onClick = { loginWithMode("default") },
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(50.dp),
